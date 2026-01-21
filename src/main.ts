@@ -1,10 +1,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { CompletionImpact, GraphSnapshot } from "./graph";
 import { RoadmapGraph } from "./graph";
 import { ReportGenerator } from "./reportGenerator";
 import { formatNumber, printSimpleTable, printTable } from "./tableFormatter";
 import type { GraphData, NodeMetrics } from "./types";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // ============================================
 // ANALYSIS OUTPUTS
@@ -442,7 +446,9 @@ function printCriticalPath(graph: RoadmapGraph) {
 					while (current) {
 						if (current.id === path[i]) return true;
 						if (!current.parentId) break;
-						current = graph.getNode(current.parentId)!;
+						const parentNode = graph.getNode(current.parentId);
+						if (!parentNode) break;
+						current = parentNode;
 					}
 					return false;
 				})
@@ -629,6 +635,7 @@ function printConditionalEffortPreview(graph: RoadmapGraph, data: GraphData) {
 
 		for (let i = 0; i < (node.effortModifiers?.length ?? 0); i++) {
 			const mod = node.effortModifiers?.[i];
+			if (!mod) continue;
 			const conditionText = mod.whenCompleted
 				.map((id) => graph.getNode(id)?.title ?? id)
 				.join(" + ")
@@ -711,7 +718,8 @@ function printTopologicalLevels(metrics: NodeMetrics[]) {
 
 	const sortedLevels = [...byLevel.keys()].sort((a, b) => a - b);
 	for (const level of sortedLevels.slice(0, 5)) {
-		const nodes = byLevel.get(level)!;
+		const nodes = byLevel.get(level);
+		if (!nodes) continue;
 		const totalEffort = nodes.reduce((sum, n) => sum + n.directEffort, 0);
 		console.log(
 			`\n  Level ${level}: ${nodes.length} solutions, ${totalEffort} effort points`,
@@ -859,15 +867,15 @@ function main() {
 	const args = process.argv.slice(2);
 	const command = args[0] || "analyze";
 
-	// Determine data path (last arg if it ends with .json, otherwise default)
+	// Determine data path (scan args for .json file, otherwise default)
 	const defaultDataPath = path.join(
 		__dirname,
 		"..",
 		"data",
-		"roadmap-graph.json",
+		"priority-graph.json",
 	);
-	const lastArg = args[args.length - 1];
-	const dataPath = lastArg?.endsWith(".json") ? lastArg : defaultDataPath;
+	const jsonArg = args.find((arg) => arg.endsWith(".json"));
+	const dataPath = jsonArg || defaultDataPath;
 
 	console.log(`Loading graph from: ${dataPath}`);
 

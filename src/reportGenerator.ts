@@ -1,4 +1,6 @@
 import * as fs from "node:fs";
+import { RoadmapGraph } from "./graph";
+import { generatePlan } from "./planGenerator";
 import type { GraphData, GraphEdge, GraphNode } from "./types";
 
 export class ReportGenerator {
@@ -59,6 +61,13 @@ export class ReportGenerator {
 
 		// Glossary
 		lines.push(...this.generateGlossary());
+		lines.push("");
+		lines.push("---");
+		lines.push("");
+
+		// Generate Plan of Attack
+		const tempGraph = new RoadmapGraph(this.data);
+		lines.push(generatePlan(tempGraph));
 		lines.push("");
 		lines.push("---");
 		lines.push("");
@@ -262,7 +271,10 @@ export class ReportGenerator {
 		const incoming = this.edgesByTarget.get(nodeId) || [];
 
 		// Filter out parent-child relationships (those are implicit)
-		const node = this.nodeMap.get(nodeId)!;
+		const node = this.nodeMap.get(nodeId);
+		if (!node) {
+			return [];
+		}
 		const relevantEdges: GraphEdge[] = [];
 
 		// Add outgoing edges (except those that are implicit parent-child)
