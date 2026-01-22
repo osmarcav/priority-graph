@@ -29,11 +29,17 @@ function printSummary(graph: RoadmapGraph, data: GraphData) {
 
 	// Calculate risk metrics
 	const solutions = data.nodes.filter((n) => n.type === "solution");
-	const totalEffort = solutions.reduce((sum, n) => sum + (n.effort ?? 0), 0);
-	const riskyNodes = solutions.filter((n) => (n.risk ?? 0) >= 0.5);
-	const riskyEffort = riskyNodes.reduce((sum, n) => sum + (n.effort ?? 0), 0);
+	const totalEffort = solutions.reduce(
+		(sum, n) => sum + (n.baseEffort ?? 0),
+		0,
+	);
+	const riskyNodes = solutions.filter((n) => (n.baseRisk ?? 0) >= 0.5);
+	const riskyEffort = riskyNodes.reduce(
+		(sum, n) => sum + (n.baseEffort ?? 0),
+		0,
+	);
 	const avgRisk =
-		solutions.reduce((sum, n) => sum + (n.risk ?? 0), 0) / solutions.length;
+		solutions.reduce((sum, n) => sum + (n.baseRisk ?? 0), 0) / solutions.length;
 
 	console.log(`\n${"═".repeat(60)}`);
 	console.log("  GRAPH SUMMARY");
@@ -295,15 +301,19 @@ function printInitiativePriorityRanking(
 ) {
 	const initiatives = metrics.filter((m) => m.type === "initiative");
 
-	// Sort by: blocks (DESC), then deps (ASC)
-	// Initiatives that unblock most work and have fewest dependencies get priority
+	// Sort by: blocks (DESC), then deps (ASC), then effort (ASC)
+	// Initiatives that unblock most work, have fewest dependencies, and lowest effort get priority
 	initiatives.sort((a, b) => {
 		// Primary: more weighted blocks = higher priority
 		if (b.weightedBlockingCount !== a.weightedBlockingCount) {
 			return b.weightedBlockingCount - a.weightedBlockingCount;
 		}
 		// Secondary: fewer dependencies = higher priority
-		return a.dependsOnCount - b.dependsOnCount;
+		if (a.dependsOnCount !== b.dependsOnCount) {
+			return a.dependsOnCount - b.dependsOnCount;
+		}
+		// Tertiary: lower effort = higher priority (easier wins)
+		return a.totalEffort - b.totalEffort;
 	});
 
 	const headers = [
@@ -343,8 +353,9 @@ function printInitiativePriorityRanking(
 	console.log(
 		"  2. Secondary: Dependency count (lower = fewer blockers, ready sooner)",
 	);
+	console.log("  3. Tertiary: Total effort (lower = easier quick wins)");
 	console.log(
-		"  → Prioritize initiatives that unblock most work with fewest dependencies\n",
+		"  → Prioritize initiatives that unblock most work with fewest dependencies and lowest effort\n",
 	);
 }
 
@@ -453,19 +464,19 @@ function printCriticalPath(graph: RoadmapGraph) {
 					return false;
 				})
 				.filter((n) => n.type === "solution")
-				.sort((a, b) => (b.effort ?? 0) - (a.effort ?? 0));
+				.sort((a, b) => (b.baseEffort ?? 0) - (a.baseEffort ?? 0));
 
 			// Show top solutions (or all if few)
 			const displayCount = Math.min(solutions.length, 5);
 			for (let j = 0; j < displayCount; j++) {
 				const sol = solutions[j];
-				console.log(`       • ${sol.title} (${sol.effort ?? 0} points)`);
+				console.log(`       • ${sol.title} (${sol.baseEffort ?? 0} points)`);
 			}
 			if (solutions.length > displayCount) {
 				const remaining = solutions.length - displayCount;
 				const remainingEffort = solutions
 					.slice(displayCount)
-					.reduce((sum, s) => sum + (s.effort ?? 0), 0);
+					.reduce((sum, s) => sum + (s.baseEffort ?? 0), 0);
 				console.log(
 					`       • ... and ${remaining} more solutions (${remainingEffort} points)`,
 				);
@@ -617,42 +628,32 @@ function printSnapshot(
 }
 
 function printConditionalEffortPreview(graph: RoadmapGraph, data: GraphData) {
-	// Find all nodes with effort modifiers
-	const nodesWithModifiers = data.nodes.filter(
-		(n) => n.effortModifiers && n.effortModifiers.length > 0,
-	);
+	// Find all FACILITATES edges that reduce effort
+	const facilitatesEdges = data.edges.filter((e) => e.type === "FACILITATES");
 
-	if (nodesWithModifiers.length === 0) {
+	if (facilitatesEdges.length === 0) {
 		return;
 	}
 
-	const headers = ["Solution", "Base", "Condition", "Reduced", "Reason"];
-	const colWidths = [35, 6, 30, 9, 30];
+	const headers = ["Facilitator", "Reduces Effort Of", "Factor", "Reason"];
+	const colWidths = [35, 35, 8, 40];
 	const rows: string[][] = [];
 
-	for (const node of nodesWithModifiers) {
-		const baseEffort = node.effort ?? 0;
+	for (const edge of facilitatesEdges) {
+		const sourceNode = graph.getNode(edge.source);
+		const targetNode = graph.getNode(edge.target);
+		if (!sourceNode || !targetNode) continue;
 
-		for (let i = 0; i < (node.effortModifiers?.length ?? 0); i++) {
-			const mod = node.effortModifiers?.[i];
-			if (!mod) continue;
-			const conditionText = mod.whenCompleted
-				.map((id) => graph.getNode(id)?.title ?? id)
-				.join(" + ")
-				.slice(0, 30);
-
-			rows.push([
-				i === 0 ? node.title : "",
-				i === 0 ? String(baseEffort) : "",
-				conditionText,
-				String(mod.effort),
-				mod.reason ?? "",
-			]);
-		}
+		rows.push([
+			sourceNode.title,
+			targetNode.title,
+			`${Math.round((edge.factor ?? 0) * 100)}%`,
+			edge.annotation ?? "",
+		]);
 	}
 
 	printTable(
-		"CONDITIONAL EFFORT NODES (effort changes based on completed dependencies)",
+		"EFFORT REDUCTION EDGES (completing facilitator reduces target effort)",
 		headers,
 		rows,
 		colWidths,

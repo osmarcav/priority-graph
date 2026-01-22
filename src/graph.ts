@@ -37,7 +37,7 @@ export interface CompletionImpact {
 	// Summary metrics
 	totalEffortUnblocked: number;
 	totalEffortSaved: number;
-	totalRiskReduced: number; // Sum of (oldRisk - newRisk) × effort
+	totalRiskReduced: number;
 }
 
 export interface GraphSnapshot {
@@ -136,7 +136,7 @@ export class RoadmapGraph {
 		const wasDependedOnBy =
 			this.incoming
 				.get(nodeId)
-				?.filter((e) => e.type === "DEPENDS_ON" || e.type === "BLOCKS")
+				?.filter((e) => e.type === "DEPENDS_ON")
 				.map((e) => e.source) ?? [];
 
 		// Mark as completed
@@ -158,42 +158,57 @@ export class RoadmapGraph {
 			}
 		}
 
-		// Find nodes with reduced effort due to conditional modifiers
+		// Find nodes with reduced effort due to FACILITATES edges
 		const effortReductions: CompletionImpact["effortReductions"] = [];
-		for (const [id, n] of this.nodes) {
-			if (this.isCompleted(id)) continue;
+		// Get outgoing FACILITATES edges - this completed node facilitates these targets
+		const facilitatesEdges =
+			this.outgoing.get(nodeId)?.filter((e) => e.type === "FACILITATES") ?? [];
 
-			const oldEffort = beforeEfforts.get(id) ?? 0;
-			const newEffort = this.getEffectiveEffort(id);
+		for (const edge of facilitatesEdges) {
+			const targetId = edge.target;
+			if (this.isCompleted(targetId)) continue;
+
+			const targetNode = this.nodes.get(targetId);
+			if (!targetNode) continue;
+
+			const oldEffort = beforeEfforts.get(targetId) ?? 0;
+			const newEffort = this.getEffectiveEffort(targetId);
 
 			if (newEffort < oldEffort) {
-				const modifier = this.getActiveModifier(id);
 				effortReductions.push({
-					id,
-					title: n.title,
+					id: targetId,
+					title: targetNode.title,
 					oldEffort,
 					newEffort,
-					reason: modifier?.reason,
+					reason: edge.annotation,
 				});
 			}
 		}
 
-		// Find nodes with reduced risk due to MITIGATES_RISK edges
+		// Find nodes with reduced risk due to DERISKS edges
 		const riskReductions: CompletionImpact["riskReductions"] = [];
-		for (const [id, n] of this.nodes) {
-			if (this.isCompleted(id)) continue;
+		// Get outgoing DERISKS edges - this completed node derisks these targets
+		const derisksEdges =
+			this.outgoing.get(nodeId)?.filter((e) => e.type === "DERISKS") ?? [];
 
-			const oldRisk = beforeRisks.get(id) ?? 0;
-			const newRisk = this.getAdjustedRisk(id);
+		for (const edge of derisksEdges) {
+			const targetId = edge.target;
+			if (this.isCompleted(targetId)) continue;
+
+			const targetNode = this.nodes.get(targetId);
+			if (!targetNode) continue;
+
+			const oldRisk = beforeRisks.get(targetId) ?? 0;
+			const newRisk = this.getAdjustedRisk(targetId);
 
 			if (newRisk < oldRisk - 0.01) {
 				// Small epsilon for floating point
 				riskReductions.push({
-					id,
-					title: n.title,
+					id: targetId,
+					title: targetNode.title,
 					oldRisk,
 					newRisk,
-					effort: this.getEffectiveEffort(id),
+					effort: this.getEffectiveEffort(targetId),
 				});
 			}
 		}
@@ -233,15 +248,18 @@ export class RoadmapGraph {
 	}
 
 	/**
-	 * Get all dependencies for a node, including inherited from parents.
-	 * Returns the edges where this node is the SOURCE (i.e., this node depends on the targets).
+	 * Get all dependencies for a node, including:
+	 * 1. Direct DEPENDS_ON edges from this node
+	 * 2. Inherited dependencies from parent chain
+	 * 3. For hierarchical nodes (pillar/initiative/problem): dependencies from descendant nodes
+	 *    that target nodes outside this subtree
+	 *
+	 * Returns the edges where this node (or its descendants) depends on the targets.
 	 */
 	private getAllDependencies(nodeId: string): GraphEdge[] {
 		// Get OUTGOING DEPENDS_ON edges (this node depends on their targets)
 		const directDeps =
-			this.outgoing
-				.get(nodeId)
-				?.filter((e) => e.type === "DEPENDS_ON" || e.type === "BLOCKS") ?? [];
+			this.outgoing.get(nodeId)?.filter((e) => e.type === "DEPENDS_ON") ?? [];
 
 		// Get inherited dependencies from parent chain
 		const inheritedDeps: GraphEdge[] = [];
@@ -251,13 +269,52 @@ export class RoadmapGraph {
 			const parentDeps =
 				this.outgoing
 					.get(currentNode.parentId)
-					?.filter((e) => e.type === "DEPENDS_ON" || e.type === "BLOCKS") ?? [];
+					?.filter((e) => e.type === "DEPENDS_ON") ?? [];
 			inheritedDeps.push(...parentDeps);
 			currentNode = this.nodes.get(currentNode.parentId);
 		}
 
+		// For hierarchical nodes, aggregate dependencies from descendants
+		// that cross outside this subtree
+		const node = this.nodes.get(nodeId);
+		const descendantDeps: GraphEdge[] = [];
+
+		if (
+			node &&
+			(node.type === "pillar" ||
+				node.type === "initiative" ||
+				node.type === "problem")
+		) {
+			const descendants = this.getAllDescendants(nodeId);
+			const descendantSet = new Set([nodeId, ...descendants]);
+
+			// Look at all DEPENDS_ON edges from descendants
+			for (const descId of descendants) {
+				const descEdges =
+					this.outgoing.get(descId)?.filter((e) => e.type === "DEPENDS_ON") ??
+					[];
+
+				for (const edge of descEdges) {
+					// Find the ancestor of the target at the same level as this node
+					const targetAncestor = this.findAncestorOfType(
+						edge.target,
+						node.type,
+					);
+
+					// Only count if the dependency crosses outside this subtree
+					if (
+						targetAncestor &&
+						targetAncestor !== nodeId &&
+						!descendantSet.has(edge.target)
+					) {
+						descendantDeps.push(edge);
+					}
+				}
+			}
+		}
+
 		// Combine and deduplicate by target
-		const allDeps = [...directDeps, ...inheritedDeps];
+		const allDeps = [...directDeps, ...inheritedDeps, ...descendantDeps];
 		const uniqueDeps = new Map<string, GraphEdge>();
 		for (const dep of allDeps) {
 			uniqueDeps.set(dep.target, dep);
@@ -275,38 +332,9 @@ export class RoadmapGraph {
 	}
 
 	/**
-	 * Get the active effort modifier for a node.
-	 * Picks the modifier with the LOWEST effort among all that match.
-	 * This captures "if any of these optimizations are done, effort reduces".
-	 */
-	getActiveModifier(
-		nodeId: string,
-	): { effort: number; reason?: string } | null {
-		const node = this.nodes.get(nodeId);
-		if (!node?.effortModifiers) return null;
-
-		let bestModifier: { effort: number; reason?: string } | null = null;
-
-		for (const modifier of node.effortModifiers) {
-			const allCompleted = modifier.whenCompleted.every((id) =>
-				this.isCompleted(id),
-			);
-			if (allCompleted) {
-				// Pick the lowest effort among matching modifiers
-				if (!bestModifier || modifier.effort < bestModifier.effort) {
-					bestModifier = {
-						effort: modifier.effort,
-						reason: modifier.reason,
-					};
-				}
-			}
-		}
-
-		return bestModifier;
-	}
-
-	/**
-	 * Get effective effort considering completed dependencies
+	 * Get effective effort considering completed FACILITATES edges.
+	 * Base effort is reduced by compounding factors from completed facilitators.
+	 * Formula: baseEffort × ∏(1 - factor) for all completed FACILITATES sources
 	 */
 	getEffectiveEffort(nodeId: string): number {
 		const node = this.nodes.get(nodeId);
@@ -315,14 +343,23 @@ export class RoadmapGraph {
 		// If completed, effort is 0
 		if (this.isCompleted(nodeId)) return 0;
 
-		// Check for active modifier
-		const modifier = this.getActiveModifier(nodeId);
-		if (modifier) {
-			return modifier.effort;
+		// Get base effort (only solutions have this)
+		const baseEffort = node.baseEffort ?? 0;
+		if (baseEffort === 0) return 0;
+
+		// Find incoming FACILITATES edges from completed nodes
+		const facilitators =
+			this.incoming.get(nodeId)?.filter((e) => e.type === "FACILITATES") ?? [];
+
+		// Apply compounding reduction: effort × (1-f1) × (1-f2) × ...
+		let reductionMultiplier = 1.0;
+		for (const edge of facilitators) {
+			if (this.isCompleted(edge.source) && edge.factor) {
+				reductionMultiplier *= 1 - edge.factor;
+			}
 		}
 
-		// Return base effort
-		return node.effort ?? 0;
+		return Math.round(baseEffort * reductionMultiplier);
 	}
 
 	/**
@@ -376,7 +413,7 @@ export class RoadmapGraph {
 		const wasDependedOnBy =
 			this.incoming
 				.get(nodeId)
-				?.filter((e) => e.type === "DEPENDS_ON" || e.type === "BLOCKS")
+				?.filter((e) => e.type === "DEPENDS_ON")
 				.map((e) => e.source) ?? [];
 
 		const nowReady: CompletionImpact["nowReady"] = [];
@@ -397,41 +434,62 @@ export class RoadmapGraph {
 		const effortReductions: CompletionImpact["effortReductions"] = [];
 		const riskReductions: CompletionImpact["riskReductions"] = [];
 
-		// Temporarily remove from completed to get "before" values
-		this.completedNodes.delete(nodeId);
+		// Get outgoing FACILITATES edges - this node facilitates these targets
+		const facilitatesEdges =
+			this.outgoing.get(nodeId)?.filter((e) => e.type === "FACILITATES") ?? [];
 
-		for (const [id, n] of this.nodes) {
-			if (id === nodeId || this.isCompleted(id)) continue;
+		for (const edge of facilitatesEdges) {
+			const targetId = edge.target;
+			if (this.isCompleted(targetId)) continue;
 
-			const oldEffort = this.getEffectiveEffort(id);
-			const oldRisk = this.getAdjustedRisk(id);
+			const targetNode = this.nodes.get(targetId);
+			if (!targetNode) continue;
 
-			// Re-add to check "after" values
+			// Calculate old effort (without this node completed)
+			const oldEffort = this.getEffectiveEffort(targetId);
+
+			// Calculate new effort (with this node completed)
 			this.completedNodes.add(nodeId);
-			const newEffort = this.getEffectiveEffort(id);
-			const newRisk = this.getAdjustedRisk(id);
+			const newEffort = this.getEffectiveEffort(targetId);
 			this.completedNodes.delete(nodeId);
 
 			if (newEffort < oldEffort) {
-				const modifier = n.effortModifiers?.find((m) =>
-					m.whenCompleted.includes(nodeId),
-				);
 				effortReductions.push({
-					id,
-					title: n.title,
+					id: targetId,
+					title: targetNode.title,
 					oldEffort,
 					newEffort,
-					reason: modifier?.reason,
+					reason: edge.annotation,
 				});
 			}
+		}
+
+		// Get outgoing DERISKS edges - this node derisks these targets
+		const derisksEdges =
+			this.outgoing.get(nodeId)?.filter((e) => e.type === "DERISKS") ?? [];
+
+		for (const edge of derisksEdges) {
+			const targetId = edge.target;
+			if (this.isCompleted(targetId)) continue;
+
+			const targetNode = this.nodes.get(targetId);
+			if (!targetNode) continue;
+
+			// Calculate old risk (without this node completed)
+			const oldRisk = this.getAdjustedRisk(targetId);
+
+			// Calculate new risk (with this node completed)
+			this.completedNodes.add(nodeId);
+			const newRisk = this.getAdjustedRisk(targetId);
+			this.completedNodes.delete(nodeId);
 
 			if (newRisk < oldRisk - 0.01) {
 				riskReductions.push({
-					id,
-					title: n.title,
+					id: targetId,
+					title: targetNode.title,
 					oldRisk,
 					newRisk,
-					effort: newEffort > 0 ? newEffort : oldEffort,
+					effort: this.getEffectiveEffort(targetId),
 				});
 			}
 		}
@@ -484,9 +542,7 @@ export class RoadmapGraph {
 	 */
 	getDependedOnByCount(nodeId: string): number {
 		return (
-			this.incoming
-				.get(nodeId)
-				?.filter((e) => e.type === "DEPENDS_ON" || e.type === "BLOCKS")
+			this.incoming.get(nodeId)?.filter((e) => e.type === "DEPENDS_ON")
 				.length ?? 0
 		);
 	}
@@ -506,7 +562,7 @@ export class RoadmapGraph {
 		const directlyBlocked =
 			this.incoming
 				.get(nodeId)
-				?.filter((e) => e.type === "DEPENDS_ON" || e.type === "BLOCKS")
+				?.filter((e) => e.type === "DEPENDS_ON")
 				.map((e) => e.source) ?? [];
 
 		let totalWeightedBlocks = 0;
@@ -571,9 +627,8 @@ export class RoadmapGraph {
 
 			// Also check incoming edges where current is the target (nodes that depend on current)
 			const dependentEdges =
-				this.incoming
-					.get(current)
-					?.filter((e) => e.type === "DEPENDS_ON" || e.type === "BLOCKS") ?? [];
+				this.incoming.get(current)?.filter((e) => e.type === "DEPENDS_ON") ??
+				[];
 
 			for (const edge of dependentEdges) {
 				// edge.source depends on edge.target (which is current)
@@ -595,9 +650,7 @@ export class RoadmapGraph {
 	// Returns level in DAG (0 = no dependencies, higher = more blocked)
 	computeTopologicalLevels(): Map<string, number> {
 		const levels = new Map<string, number>();
-		const dependencyEdges = this.edges.filter(
-			(e) => e.type === "DEPENDS_ON" || e.type === "BLOCKS",
-		);
+		const dependencyEdges = this.edges.filter((e) => e.type === "DEPENDS_ON");
 
 		// Build dependency graph
 		const deps = new Map<string, Set<string>>();
@@ -677,7 +730,7 @@ export class RoadmapGraph {
 		}
 
 		for (const edge of this.edges) {
-			if (edge.type === "DEPENDS_ON" || edge.type === "BLOCKS") {
+			if (edge.type === "DEPENDS_ON") {
 				// edge.source depends on edge.target
 				// So completing edge.target enables edge.source
 				enablesMap.get(edge.target)?.push(edge.source);
@@ -698,9 +751,7 @@ export class RoadmapGraph {
 				// Find nodes that this node enables
 				// Score flows FROM nodes we depend on TO us
 				const incomingDeps =
-					this.incoming
-						.get(nodeId)
-						?.filter((e) => e.type === "DEPENDS_ON" || e.type === "BLOCKS") ??
+					this.incoming.get(nodeId)?.filter((e) => e.type === "DEPENDS_ON") ??
 					[];
 
 				for (const edge of incomingDeps) {
@@ -741,9 +792,7 @@ export class RoadmapGraph {
 		if (this.isCompleted(nodeId)) return 0;
 
 		const deps =
-			this.incoming
-				.get(nodeId)
-				?.filter((e) => e.type === "DEPENDS_ON" || e.type === "BLOCKS") ?? [];
+			this.incoming.get(nodeId)?.filter((e) => e.type === "DEPENDS_ON") ?? [];
 
 		if (deps.length === 0) return 1;
 
@@ -769,13 +818,47 @@ export class RoadmapGraph {
 	// UNCERTAINTY SCORING
 	// ============================================
 
-	getUncertainty(nodeId: string): number {
+	getBaseUncertainty(nodeId: string): number {
 		const node = this.nodes.get(nodeId);
-		return node?.uncertainty ?? 1.0; // Default: no uncertainty
+		return node?.baseUncertainty ?? 0.0; // Default: no uncertainty
 	}
 
+	/**
+	 * Get adjusted uncertainty considering completed INFORMS edges.
+	 * Uncertainty is reduced by compounding factors from completed informers.
+	 * Formula: baseUncertainty × ∏(1 - factor) for all completed INFORMS sources
+	 */
+	getAdjustedUncertainty(nodeId: string): number {
+		const baseUncertainty = this.getBaseUncertainty(nodeId);
+		if (baseUncertainty === 0) return 0;
+
+		// Find incoming INFORMS edges from completed nodes
+		const informers =
+			this.incoming.get(nodeId)?.filter((e) => e.type === "INFORMS") ?? [];
+
+		if (informers.length === 0) return baseUncertainty;
+
+		// Apply compounding reduction: uncertainty × (1-f1) × (1-f2) × ...
+		let reductionMultiplier = 1.0;
+		for (const edge of informers) {
+			if (this.isCompleted(edge.source) && edge.factor) {
+				reductionMultiplier *= 1 - edge.factor;
+			}
+		}
+
+		return baseUncertainty * reductionMultiplier;
+	}
+
+	/**
+	 * Get adjusted effort including uncertainty overhead.
+	 * Formula: effectiveEffort × (1 + adjustedUncertainty)
+	 * Uncertainty adds overhead (1.0 = 0% overhead, 0.5 = 50% overhead)
+	 */
 	getAdjustedEffort(nodeId: string): number {
-		return this.getEffectiveEffort(nodeId) * this.getUncertainty(nodeId);
+		return (
+			this.getEffectiveEffort(nodeId) *
+			(1 + this.getAdjustedUncertainty(nodeId))
+		);
 	}
 
 	// ============================================
@@ -784,42 +867,37 @@ export class RoadmapGraph {
 
 	getBaseRisk(nodeId: string): number {
 		const node = this.nodes.get(nodeId);
-		return node?.risk ?? 0.0; // Default: no risk
+		return node?.baseRisk ?? 0.0; // Default: no risk
 	}
 
 	/**
-	 * Get adjusted risk considering completed mitigators.
+	 * Get adjusted risk considering completed DERISKS edges.
 	 *
-	 * Edge semantics: source RISK_MITIGATED_BY target
-	 * - source = the risky node
-	 * - target = the mitigator (completing this reduces risk of source)
+	 * Edge semantics: source DERISKS target
+	 * - source = the derisking action (completing this reduces target's risk)
+	 * - target = the risky node
 	 *
-	 * Risk = baseRisk × product of (1 - riskReduction) for each completed mitigator
+	 * Risk = baseRisk × product of (1 - factor) for each completed derisker
 	 */
 	getAdjustedRisk(nodeId: string): number {
 		const baseRisk = this.getBaseRisk(nodeId);
 		if (baseRisk === 0) return 0;
 
-		// Find all MITIGATES_RISK edges where this node is the SOURCE (the risky one)
-		// and check if the TARGET (the mitigator) is completed
-		const mitigatorEdges =
-			this.outgoing.get(nodeId)?.filter((e) => e.type === "MITIGATES_RISK") ??
-			[];
+		// Find incoming DERISKS edges from completed nodes
+		const deriskers =
+			this.incoming.get(nodeId)?.filter((e) => e.type === "DERISKS") ?? [];
 
-		if (mitigatorEdges.length === 0) return baseRisk;
+		if (deriskers.length === 0) return baseRisk;
 
-		// Calculate remaining risk after mitigations
-		let remainingRiskFactor = 1.0;
-
-		for (const edge of mitigatorEdges) {
-			// If the mitigator (target) is completed, apply its risk reduction
-			if (this.isCompleted(edge.target)) {
-				const reduction = edge.riskReduction ?? 0.5; // Default 50% reduction
-				remainingRiskFactor *= 1 - reduction;
+		// Apply compounding reduction: risk × (1-f1) × (1-f2) × ...
+		let reductionMultiplier = 1.0;
+		for (const edge of deriskers) {
+			if (this.isCompleted(edge.source) && edge.factor) {
+				reductionMultiplier *= 1 - edge.factor;
 			}
 		}
 
-		return baseRisk * remainingRiskFactor;
+		return baseRisk * reductionMultiplier;
 	}
 
 	/**
@@ -833,35 +911,37 @@ export class RoadmapGraph {
 	/**
 	 * Compute how much "risky work" becomes safer if this node is completed.
 	 *
-	 * Edge semantics: source RISK_MITIGATED_BY target
-	 * - We look for edges where THIS node is the TARGET (the mitigator)
-	 * - The SOURCE of those edges is the risky work that becomes safer
+	 * Edge semantics: source DERISKS target
+	 * - We look for edges where THIS node is the SOURCE (the derisker)
+	 * - The TARGET of those edges is the risky work that becomes safer
 	 *
-	 * RiskMitigationValue = Σ (riskReduction × effort × currentRisk) for each mitigated node
+	 * RiskMitigationValue = Σ (factor × baseEffort × currentRisk) for each derisked node
 	 */
 	computeRiskMitigationValue(nodeId: string): number {
-		// Find all MITIGATES_RISK edges where this node is the TARGET (mitigator)
-		// The SOURCE of these edges are the risky tasks that would become safer
-		const mitigatedEdges =
-			this.incoming.get(nodeId)?.filter((e) => e.type === "MITIGATES_RISK") ??
-			[];
+		// Find all DERISKS edges where this node is the SOURCE (derisker)
+		// The TARGET of these edges are the risky tasks that would become safer
+		const deriskedEdges =
+			this.outgoing.get(nodeId)?.filter((e) => e.type === "DERISKS") ?? [];
 
-		if (mitigatedEdges.length === 0) return 0;
+		if (deriskedEdges.length === 0) return 0;
 
 		let totalValue = 0;
 
-		for (const edge of mitigatedEdges) {
-			const riskyNodeId = edge.source;
+		for (const edge of deriskedEdges) {
+			const riskyNodeId = edge.target;
 
 			if (this.isCompleted(riskyNodeId)) continue; // Risky task already done
-			if (this.isCompleted(nodeId)) continue; // Already mitigating
+			if (this.isCompleted(nodeId)) continue; // Already derisking
+
+			const riskyNode = this.nodes.get(riskyNodeId);
+			if (!riskyNode) continue;
 
 			const riskyEffort = this.getEffectiveEffort(riskyNodeId);
 			const riskyCurrentRisk = this.getAdjustedRisk(riskyNodeId);
-			const reduction = edge.riskReduction ?? 0.5;
+			const factor = edge.factor ?? 0.0;
 
 			// Value = how much risk × effort is being reduced
-			totalValue += reduction * riskyEffort * riskyCurrentRisk;
+			totalValue += factor * riskyEffort * riskyCurrentRisk;
 		}
 
 		return totalValue;
@@ -974,7 +1054,7 @@ export class RoadmapGraph {
 
 		for (const [nodeId, node] of this.nodes) {
 			const directEffort = this.getDirectEffort(nodeId);
-			const uncertainty = this.getUncertainty(nodeId);
+			const uncertainty = this.getAdjustedUncertainty(nodeId);
 			const baseRisk = this.getBaseRisk(nodeId);
 			const adjustedRisk = this.getAdjustedRisk(nodeId);
 
@@ -1095,9 +1175,7 @@ export class RoadmapGraph {
 
 			// Find nodes that depend on this one
 			const dependentEdges =
-				this.incoming
-					.get(nodeId)
-					?.filter((e) => e.type === "DEPENDS_ON" || e.type === "BLOCKS") ?? [];
+				this.incoming.get(nodeId)?.filter((e) => e.type === "DEPENDS_ON") ?? [];
 
 			for (const edge of dependentEdges) {
 				const dependentEffort = this.getTotalEffort(edge.source);
@@ -1147,9 +1225,7 @@ export class RoadmapGraph {
 			path.push(nodeId);
 
 			const outEdges =
-				this.outgoing
-					.get(nodeId)
-					?.filter((e) => e.type === "DEPENDS_ON" || e.type === "BLOCKS") ?? [];
+				this.outgoing.get(nodeId)?.filter((e) => e.type === "DEPENDS_ON") ?? [];
 
 			for (const edge of outEdges) {
 				if (!visited.has(edge.target)) {

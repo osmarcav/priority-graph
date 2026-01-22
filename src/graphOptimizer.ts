@@ -19,7 +19,7 @@ export class GraphOptimizer {
 				const data = fs.readFileSync(this.cachePath, "utf-8");
 				return JSON.parse(data);
 			}
-		} catch (e) {
+		} catch {
 			// Silently fail on cache read errors
 		}
 		return null;

@@ -115,23 +115,23 @@ export class ReportGenerator {
 			"",
 			"#### Primary Tags (in source data)",
 			"",
-			"| Tag               | Direction | Meaning                                                         | Algorithm Impact                | Inverse (when target) |",
-			"| ----------------- | --------- | --------------------------------------------------------------- | ------------------------------- | --------------------- |",
-			"| `DEPENDS_ON`      | A → B     | A requires B to be completed first (known upfront)              | Increases A's blocker count     | `DEPENDENT`           |",
-			"| `BLOCKS`          | A → B     | A must finish before B can start (discovered during work)       | Same as DEPENDS_ON semantically | `BLOCKED_BY`          |",
-			"| `FACILITATES`     | A → B     | Completing A makes B easier or faster                           | Increases A's impact score      | `FACILITATED_BY`      |",
-			"| `RELATES_TO`      | A ↔ B     | A and B share context or concerns                               | Useful for grouping             | `RELATES_TO`          |",
-			"| `COORDINATE_WITH` | A ↔ B     | A can proceed in parallel but risk diverging without sync       | Flags coordination need         | `COORDINATE_WITH`     |",
-			"| `MITIGATES_RISK`  | A → B     | B reduces the risk associated with A                            | Lowers overall project risk     | `MITIGATES_RISK`      |",
+			"| Tag                 | Direction | Meaning                                                         | Algorithm Impact                | Inverse (when target) |",
+			"| ------------------- | --------- | --------------------------------------------------------------- | ------------------------------- | --------------------- |",
+			"| `DEPENDS_ON`        | A → B     | A requires B to be completed first (known upfront)              | Increases A's blocker count     | `DEPENDENT`           |",
+			"| `FACILITATES`       | A → B     | Completing A reduces B's effort (by factor 0.0-1.0)             | Increases A's impact score      | `FACILITATED_BY`      |",
+			"| `DERISKS`           | A → B     | Completing A reduces B's risk (by factor 0.0-1.0)               | Lowers overall project risk     | `DERISKED_BY`         |",
+			"| `INFORMS`           | A → B     | Completing A reduces B's uncertainty (by factor 0.0-1.0)        | Enables better planning         | `INFORMED_BY`         |",
+			"| `RELATES_TO`        | A ↔ B     | A and B share context or concerns                               | Useful for grouping             | `RELATES_TO`          |",
+			"| `NEEDS_COORDINATION`| A ↔ B     | A can proceed in parallel but risk diverging without sync       | Flags coordination need         | `NEEDS_COORDINATION`  |",
 			"",
 			"#### Inverse Tags (computed for display)",
 			"",
 			"Some tags are displayed differently depending on whether you're viewing the source or target node, to make relationships clearer:",
 			"",
 			"- `DEPENDENT`: Appears when viewing the **target** of a `DEPENDS_ON` edge. Indicates the referenced item is dependent on this item.",
-			"- `BLOCKED_BY`: Appears when viewing the **target** of a `BLOCKS` edge. Indicates this item is blocked by the referenced item.",
-			"- `FACILITATED_BY`: Appears when viewing the **target** of a `FACILITATES` edge. Indicates this item is made easier by completing the referenced item.",
-			"- `RISK_MITIGATED_BY`: Appears when viewing the **source** of a `MITIGATES_RISK` edge. Indicates the risk of this item is reduced by completing the referenced item.",
+			"- `FACILITATED_BY`: Appears when viewing the **target** of a `FACILITATES` edge. Indicates this item's effort is reduced by completing the referenced item.",
+			"- `DERISKED_BY`: Appears when viewing the **target** of a `DERISKS` edge. Indicates this item's risk is reduced by completing the referenced item.",
+			"- `INFORMED_BY`: Appears when viewing the **target** of an `INFORMS` edge. Indicates this item's uncertainty is reduced by completing the referenced item.",
 			"",
 			"These inverse tags are not in the source data—they're computed when generating the report to improve readability from each node's perspective.",
 			"",
@@ -334,32 +334,28 @@ export class ReportGenerator {
 						// If A depends on B, then from B's perspective: A is a dependent
 						displayType = "DEPENDENT";
 						break;
-					case "BLOCKS":
-						// If A blocks B, then from B's perspective: blocked by A
-						displayType = "BLOCKED_BY";
-						break;
 					case "FACILITATES":
 						// If A facilitates B, then B is facilitated by A
 						displayType = "FACILITATED_BY";
 						break;
 					// Bidirectional edges stay the same
 					case "RELATES_TO":
-					case "COORDINATE_WITH":
+					case "NEEDS_COORDINATION":
 						displayType = edge.type;
 						break;
-					// MITIGATES_RISK: when target, we mitigate the source's risk
-					case "MITIGATES_RISK":
-						// No change - target mitigates source's risk
-						displayType = "MITIGATES_RISK";
+					// DERISKS: when target, we derisk the source's risk
+					case "DERISKS":
+						// No change - target derisks source's risk
+						displayType = "DERISKS";
 						break;
 				}
 			} else {
 				// Current node is SOURCE of the edge
 				switch (edge.type) {
-					case "MITIGATES_RISK":
-						// If A->B with MITIGATES_RISK, B mitigates A's risk
-						// So from A's perspective: risk is mitigated by B
-						displayType = "RISK_MITIGATED_BY";
+					case "DERISKS":
+						// If A->B with DERISKS, B derisks A's risk
+						// So from A's perspective: risk is derisked by B
+						displayType = "RISK_DERISKED_BY";
 						break;
 					default:
 						// Keep original type

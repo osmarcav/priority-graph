@@ -1,25 +1,20 @@
-export type NodeType = "pillar" | "initiative" | "problem" | "solution";
+import type { z } from "zod";
+import type {
+	EdgeTypeSchema,
+	NodeTypeSchema,
+	RoadmapGraphSchema,
+} from "./validator";
 
-export type EdgeType =
-	| "DEPENDS_ON"
-	| "BLOCKS"
-	| "FACILITATES"
-	| "RELATES_TO"
-	| "COORDINATE_WITH"
-	| "MITIGATES_RISK"; // Source mitigates risk for target
+export type NodeType = z.infer<typeof NodeTypeSchema>;
+
+export type EdgeType = z.infer<typeof EdgeTypeSchema>;
+
+// Inferred types from validator schemas (for external data)
+export type RoadmapGraph = z.infer<typeof RoadmapGraphSchema>;
+export type ValidatedNode = RoadmapGraph["nodes"][number];
+export type ValidatedEdge = RoadmapGraph["edges"][number];
 
 export type NodeStatus = "backlog" | "ready" | "in_progress" | "done";
-
-/**
- * Conditional effort modifier.
- * When all nodes in `whenCompleted` are done, effort becomes `effort`.
- * Multiple modifiers are evaluated, and the lowest effort wins.
- */
-export interface EffortModifier {
-	whenCompleted: string[]; // Node IDs that must be completed
-	effort: number; // New effort value when condition is met
-	reason?: string; // Optional explanation
-}
 
 export interface GraphNode {
 	id: string;
@@ -29,16 +24,10 @@ export interface GraphNode {
 	parentId?: string;
 	status?: NodeStatus;
 
-	// Effort modeling (volume of work)
-	effort?: number; // Base effort in story points
-	effortModifiers?: EffortModifier[]; // Conditional effort reductions
-
-	// Uncertainty modeling (discovery/research overhead)
-	uncertainty?: number; // Multiplier: 1.0 = known, 2.0 = significant unknowns
-
-	// Risk modeling (probability of rework/failure)
-	risk?: number; // Base risk: 0.0 (safe) to 1.0 (dangerous)
-	riskFactors?: string[]; // Why is this risky?
+	// Solution node metrics (only for type="solution")
+	baseEffort?: number; // Base effort in story points
+	baseRisk?: number; // Base risk: 0.0 (safe) to 1.0 (dangerous)
+	baseUncertainty?: number; // Base uncertainty: 0.0 (known) to 1.0 (high unknowns)
 }
 
 export interface GraphEdge {
@@ -47,9 +36,10 @@ export interface GraphEdge {
 	target: string;
 	type: EdgeType;
 	annotation?: string;
+	strength?: number; // General edge strength (0.0-1.0)
 
-	// For MITIGATES_RISK edges
-	riskReduction?: number; // How much risk is reduced (0.0-1.0)
+	// For FACILITATES, DERISKS, INFORMS edges
+	factor?: number; // Reduction factor (0.0-1.0)
 }
 
 /**
