@@ -12,13 +12,15 @@ The system models a roadmap as a directed graph with a 4-level hierarchy:
 
 ### Relationships (Edges)
 
-| Edge Type        | Direction | Meaning                         | Algorithmic Impact                    |
-| :--------------- | :-------- | :------------------------------ | :------------------------------------ |
-| `DEPENDS_ON`     | A → B     | A cannot start until B is done  | Calculating Critical Path & Readiness |
-| `BLOCKS`         | A → B     | A blocks B (Inverse of depends) | Increases "Blocking Score" (Priority) |
-| `FACILITATES`    | A → B     | A makes B easier/faster         | Increases PageRank "Influence"        |
-| `MITIGATES_RISK` | A → B     | A reduces the risk of B         | Adjusts "Safety Factor"               |
-| `RELATES_TO`     | A ↔ B     | Contextual link                 | Cluster detection                     |
+| Edge Type            | Direction | Meaning                            | Algorithmic Impact                    |
+| :------------------- | :-------- | :--------------------------------- | :------------------------------------ |
+| `DEPENDS_ON`         | A → B     | A cannot start until B is done     | Calculating Critical Path & Readiness |
+| `FACILITATES`        | A → B     | A makes B easier/faster (effort↓)  | Increases PageRank "Influence"        |
+| `DERISKS`            | A → B     | A reduces implementation risk of B | Adjusts "Safety Factor"               |
+| `INFORMS`            | A → B     | A reduces uncertainty of B         | Better planning & estimation          |
+| `ALLEVIATES`         | A → B     | A reduces status quo risk of B     | Increases "Urgency Factor"            |
+| `NEEDS_COORDINATION` | A ↔ B     | A and B need synchronization       | Flags coordination requirement        |
+| `RELATES_TO`         | A ↔ B     | Contextual link                    | Cluster detection                     |
 
 ## ⚙️ Algorithms & Scoring
 
@@ -27,22 +29,38 @@ The engine (implemented in [`src/graph.ts`](src/graph.ts)) aggregates several me
 ### 1. The Priority Formula
 Solutions are ranked by a composite score (0-1 scale) derived from:
 
-$$ P = (W_r \cdot Readiness) + (W_i \cdot Influence) + (W_l \cdot Leverage) + (W_s \cdot Safety) + (W_b \cdot Blocking) + Bonus $$
+$$ P = (W_r \cdot Readiness) + (W_i \cdot Influence) + (W_l \cdot Leverage) + (W_s \cdot Safety) + (W_b \cdot Blocking) + (W_u \cdot Urgency) + RiskBonus + UrgencyBonus $$
 
-- **Readiness**: Can we start now? (Based on unblocked status).
-- **Influence**: Graph centrality using a PageRank-style algorithm.
-- **Leverage**: Ratio of downstream effort unlocked vs. own effort.
-- **Safety**: Risk avoidance ($1 - AdjustedRisk$).
-- **Blocking**: Weighted count of dependent nodes (including descendants).
-- **Risk Bonus**: Extra points for tasks that mitigate risk for other high-effort nodes.
+- **Readiness** (25%): Can we start now? (Based on unblocked status).
+- **Influence** (10%): Graph centrality using a PageRank-style algorithm.
+- **Leverage** (15%): Ratio of downstream effort unlocked vs. own effort.
+- **Safety** (10%): Risk avoidance ($1 - AdjustedRisk$).
+- **Blocking** (15%): Weighted count of dependent nodes (including descendants).
+- **Urgency** (25%): Based on parent problem's status quo risk (how urgent is the problem?).
+- **Risk Bonus**: Extra points for tasks that mitigate implementation risk for other high-effort nodes.
+- **Urgency Bonus**: Extra points for tasks that alleviate urgent problems (high status quo risk).
 
 ### 2. Conditional Effort (Optimistic execution)
 The graph supports **Effort Modifiers**. If node A `FACILITATES` node B, the effort of B can be dynamically reduced when A is completed. The engine simulates this to find "Efficiency Cascades."
 
-### 3. Risk Propagation
-Risk is modeled as a probability of failure/rework.
-- **Base Risk**: Intrinsic risk of a node.
-- **Adjusted Risk**: Reduced dynamically when `MITIGATES_RISK` predecessors are completed.
+### 3. Risk Management
+The system tracks two types of risk:
+
+#### Implementation Risk (Solutions)
+Modeled as probability of failure/rework during execution:
+- **Base Risk**: Intrinsic risk of implementing a solution.
+- **Adjusted Risk**: Reduced dynamically when `DERISKS` predecessors are completed.
+
+#### Status Quo Risk (Problems)
+Modeled as urgency/cost of NOT solving a problem:
+- **Status Quo Risk**: Risk of maintaining the current state (0.0 = stable, 1.0 = critical).
+- **Adjusted Status Quo Risk**: Reduced when `ALLEVIATES` solutions are completed.
+- **Examples**: 
+  - Security vulnerabilities: 0.8-0.9 (urgent)
+  - Tech debt cleanup: 0.3-0.6 (moderate)
+  - New features: 0.1-0.2 (low urgency)
+
+High status quo risk makes solutions urgent even if they carry implementation risk.
 
 ## 🚀 CLI Usage
 

@@ -25,7 +25,7 @@ export interface CompletionImpact {
 		reason?: string;
 	}>;
 
-	// Nodes with reduced risk (NEW)
+	// Nodes with reduced risk
 	riskReductions: Array<{
 		id: string;
 		title: string;
@@ -34,10 +34,19 @@ export interface CompletionImpact {
 		effort: number;
 	}>;
 
+	// Nodes with reduced status quo risk
+	statusQuoRiskReductions: Array<{
+		id: string;
+		title: string;
+		oldStatusQuoRisk: number;
+		newStatusQuoRisk: number;
+	}>;
+
 	// Summary metrics
 	totalEffortUnblocked: number;
 	totalEffortSaved: number;
 	totalRiskReduced: number;
+	totalStatusQuoRiskReduced: number;
 }
 
 export interface GraphSnapshot {
@@ -213,6 +222,33 @@ export class RoadmapGraph {
 			}
 		}
 
+		// Find nodes with reduced status quo risk due to ALLEVIATES edges
+		const statusQuoRiskReductions: CompletionImpact["statusQuoRiskReductions"] =
+			[];
+		// Get outgoing ALLEVIATES edges - this completed node alleviates these problems
+		const alleviatesEdges =
+			this.outgoing.get(nodeId)?.filter((e) => e.type === "ALLEVIATES") ?? [];
+
+		for (const edge of alleviatesEdges) {
+			const targetNode = this.nodes.get(edge.target);
+			if (!targetNode || this.isCompleted(edge.target)) continue;
+
+			// Only problems have statusQuoRisk
+			if (targetNode.type !== "problem") continue;
+
+			const oldStatusQuoRisk = beforeRisks.get(edge.target) ?? 0;
+			const newStatusQuoRisk = this.getAdjustedStatusQuoRisk(edge.target);
+
+			if (newStatusQuoRisk < oldStatusQuoRisk) {
+				statusQuoRiskReductions.push({
+					id: edge.target,
+					title: targetNode.title,
+					oldStatusQuoRisk: oldStatusQuoRisk,
+					newStatusQuoRisk: newStatusQuoRisk,
+				});
+			}
+		}
+
 		// Calculate summary metrics
 		const totalEffortUnblocked = nowReady.reduce((sum, n) => sum + n.effort, 0);
 		const totalEffortSaved = effortReductions.reduce(
@@ -223,6 +259,10 @@ export class RoadmapGraph {
 			(sum, r) => sum + (r.oldRisk - r.newRisk) * r.effort,
 			0,
 		);
+		const totalStatusQuoRiskReduced = statusQuoRiskReductions.reduce(
+			(sum, r) => sum + (r.oldStatusQuoRisk - r.newStatusQuoRisk),
+			0,
+		);
 
 		return {
 			nodeId,
@@ -230,9 +270,11 @@ export class RoadmapGraph {
 			nowReady,
 			effortReductions,
 			riskReductions,
+			statusQuoRiskReductions,
 			totalEffortUnblocked,
 			totalEffortSaved,
 			totalRiskReduced,
+			totalStatusQuoRiskReduced,
 		};
 	}
 
@@ -433,6 +475,8 @@ export class RoadmapGraph {
 		// Find effort reductions and risk reductions
 		const effortReductions: CompletionImpact["effortReductions"] = [];
 		const riskReductions: CompletionImpact["riskReductions"] = [];
+		const statusQuoRiskReductions: CompletionImpact["statusQuoRiskReductions"] =
+			[];
 
 		// Get outgoing FACILITATES edges - this node facilitates these targets
 		const facilitatesEdges =
@@ -494,6 +538,35 @@ export class RoadmapGraph {
 			}
 		}
 
+		// Get outgoing ALLEVIATES edges - this node alleviates these problems
+		const alleviatesEdges =
+			this.outgoing.get(nodeId)?.filter((e) => e.type === "ALLEVIATES") ?? [];
+
+		for (const edge of alleviatesEdges) {
+			const targetId = edge.target;
+			if (this.isCompleted(targetId)) continue;
+
+			const targetNode = this.nodes.get(targetId);
+			if (!targetNode || targetNode.type !== "problem") continue;
+
+			// Calculate old status quo risk (without this node completed)
+			const oldStatusQuoRisk = this.getAdjustedStatusQuoRisk(targetId);
+
+			// Calculate new status quo risk (with this node completed)
+			this.completedNodes.add(nodeId);
+			const newStatusQuoRisk = this.getAdjustedStatusQuoRisk(targetId);
+			this.completedNodes.delete(nodeId);
+
+			if (newStatusQuoRisk < oldStatusQuoRisk - 0.01) {
+				statusQuoRiskReductions.push({
+					id: targetId,
+					title: targetNode.title,
+					oldStatusQuoRisk,
+					newStatusQuoRisk,
+				});
+			}
+		}
+
 		// Restore original state
 		if (wasCompleted) {
 			this.completedNodes.add(nodeId);
@@ -508,6 +581,10 @@ export class RoadmapGraph {
 			(sum, r) => sum + (r.oldRisk - r.newRisk) * r.effort,
 			0,
 		);
+		const totalStatusQuoRiskReduced = statusQuoRiskReductions.reduce(
+			(sum, r) => sum + (r.oldStatusQuoRisk - r.newStatusQuoRisk),
+			0,
+		);
 
 		return {
 			nodeId,
@@ -515,9 +592,11 @@ export class RoadmapGraph {
 			nowReady,
 			effortReductions,
 			riskReductions,
+			statusQuoRiskReductions,
 			totalEffortUnblocked,
 			totalEffortSaved,
 			totalRiskReduced,
+			totalStatusQuoRiskReduced,
 		};
 	}
 
@@ -901,6 +980,47 @@ export class RoadmapGraph {
 	}
 
 	/**
+	 * Get base status quo risk from problem nodes.
+	 * Only problem nodes have statusQuoRisk - this is the risk of NOT solving the problem.
+	 */
+	getBaseStatusQuoRisk(nodeId: string): number {
+		const node = this.nodes.get(nodeId);
+		if (!node || node.type !== "problem") return 0;
+		return node.statusQuoRisk ?? 0;
+	}
+
+	/**
+	 * Get adjusted status quo risk considering completed ALLEVIATES edges.
+	 *
+	 * Edge semantics: source ALLEVIATES target
+	 * - source = the solution that alleviates the problem
+	 * - target = the problem with statusQuoRisk
+	 *
+	 * StatusQuoRisk = baseStatusQuoRisk × product of (1 - factor) for each completed alleviator
+	 */
+	getAdjustedStatusQuoRisk(nodeId: string): number {
+		const node = this.nodes.get(nodeId);
+		if (!node || node.type !== "problem") return 0;
+
+		const baseStatusQuoRisk = node.statusQuoRisk ?? 0;
+		if (baseStatusQuoRisk === 0) return 0;
+
+		// Find incoming ALLEVIATES edges from completed nodes
+		const alleviators =
+			this.incoming.get(nodeId)?.filter((e) => e.type === "ALLEVIATES") ?? [];
+
+		// Apply compounding reduction: risk × (1-f1) × (1-f2) × ...
+		let reductionMultiplier = 1.0;
+		for (const edge of alleviators) {
+			if (this.isCompleted(edge.source) && edge.factor !== undefined) {
+				reductionMultiplier *= 1 - edge.factor;
+			}
+		}
+
+		return baseStatusQuoRisk * reductionMultiplier;
+	}
+
+	/**
 	 * Get the safety factor (1 - adjustedRisk).
 	 * Higher = safer to execute this task now.
 	 */
@@ -948,6 +1068,38 @@ export class RoadmapGraph {
 	}
 
 	/**
+	 * Compute how much status quo risk is alleviated if this node is completed.
+	 *
+	 * Edge semantics: source ALLEVIATES target
+	 * - We look for edges where THIS node is the SOURCE (the alleviator)
+	 * - The TARGET of those edges is the problem with statusQuoRisk
+	 *
+	 * StatusQuoAlleviationValue = Σ (factor × currentStatusQuoRisk) for each alleviated problem
+	 */
+	computeStatusQuoAlleviationValue(nodeId: string): number {
+		// Find outgoing ALLEVIATES edges (this node alleviates target problems)
+		const alleviatesEdges =
+			this.outgoing.get(nodeId)?.filter((e) => e.type === "ALLEVIATES") ?? [];
+
+		let totalAlleviation = 0;
+		for (const edge of alleviatesEdges) {
+			const targetNode = this.nodes.get(edge.target);
+			if (!targetNode || this.isCompleted(edge.target)) continue;
+
+			// Only problems have statusQuoRisk
+			if (targetNode.type !== "problem") continue;
+
+			const currentStatusQuoRisk = this.getAdjustedStatusQuoRisk(edge.target);
+			const factor = edge.factor ?? 0;
+
+			// How much of the problem's status quo risk does this alleviate?
+			totalAlleviation += factor * currentStatusQuoRisk;
+		}
+
+		return totalAlleviation;
+	}
+
+	/**
 	 * Get risky effort: sum of effort × risk for all incomplete solutions
 	 */
 	getTotalRiskyEffort(): number {
@@ -961,6 +1113,19 @@ export class RoadmapGraph {
 		return total;
 	}
 
+	/**
+	 * Get total status quo risk across all incomplete problems
+	 */
+	getTotalStatusQuoRisk(): number {
+		let total = 0;
+		for (const [id, node] of this.nodes) {
+			if (node.type === "problem" && !this.isCompleted(id)) {
+				total += this.getAdjustedStatusQuoRisk(id);
+			}
+		}
+		return total;
+	}
+
 	// ============================================
 	// COMBINED PRIORITY SCORING (Risk-Averse)
 	// ============================================
@@ -968,7 +1133,7 @@ export class RoadmapGraph {
 	/**
 	 * Priority formula with weighted factors (additive, not multiplicative).
 	 *
-	 * Priority = Σ(weight_i × factor_i) + riskMitigationBonus
+	 * Priority = Σ(weight_i × factor_i) + riskMitigationBonus + statusQuoAlleviationBonus
 	 *
 	 * Factors (all normalized 0-1):
 	 * - readiness: Can we start this now? (1.0 = yes, 0 = fully blocked)
@@ -976,14 +1141,17 @@ export class RoadmapGraph {
 	 * - leverage: How much downstream work does this unblock? (normalized)
 	 * - safetyFactor: (1 - adjustedRisk) - higher for safer tasks
 	 * - blockingScore: Normalized weighted blocking count
+	 * - urgencyFactor: Based on parent problem's statusQuoRisk - higher for urgent problems
 	 * - riskMitigationBonus: Extra priority for tasks that reduce risk for others
+	 * - statusQuoAlleviationBonus: Extra priority for tasks that alleviate urgent problems
 	 *
 	 * Default weights balance immediate value with strategic impact:
-	 * - readiness: 30% - Can we start now?
-	 * - influence: 15% - Graph centrality
-	 * - leverage: 20% - Downstream unblocking
-	 * - safetyFactor: 15% - Risk avoidance
-	 * - blockingScore: 20% - How much work depends on this
+	 * - readiness: 25% - Can we start now?
+	 * - influence: 10% - Graph centrality
+	 * - leverage: 15% - Downstream unblocking
+	 * - safetyFactor: 10% - Risk avoidance
+	 * - blockingScore: 15% - How much work depends on this
+	 * - urgencyFactor: 25% - How urgent is the problem this solves?
 	 */
 	computePriorityScore(
 		nodeId: string,
@@ -994,26 +1162,34 @@ export class RoadmapGraph {
 			leverage?: number;
 			safetyFactor?: number;
 			blockingScore?: number;
+			urgencyFactor?: number;
 			riskMitigationBonus?: number;
+			statusQuoAlleviationBonus?: number;
 		} = {},
 	): number {
-		// Default weights (should sum to 100%)
+		const node = this.nodes.get(nodeId);
+		if (!node || this.isCompleted(nodeId)) return 0;
+		// Default weights
 		const w = {
-			readiness: weights.readiness ?? 0.3,
-			influence: weights.influence ?? 0.15,
-			leverage: weights.leverage ?? 0.2,
-			safetyFactor: weights.safetyFactor ?? 0.15,
-			blockingScore: weights.blockingScore ?? 0.2,
-			riskMitigationBonus: weights.riskMitigationBonus ?? 0.5,
+			readiness: weights.readiness ?? 0.25,
+			influence: weights.influence ?? 0.1,
+			leverage: weights.leverage ?? 0.15,
+			safetyFactor: weights.safetyFactor ?? 0.1,
+			blockingScore: weights.blockingScore ?? 0.15,
+			urgencyFactor: weights.urgencyFactor ?? 0.25,
+			riskMitigationBonus: weights.riskMitigationBonus ?? 1.0,
+			statusQuoAlleviationBonus: weights.statusQuoAlleviationBonus ?? 2.0,
 		};
 
-		// Raw factors
+		// Compute factors
 		const readiness = this.computeReadiness(nodeId);
 		const influence = influenceScores.get(nodeId) ?? 0;
 		const rawLeverage = this.computeLeverage(nodeId);
 		const safetyFactor = this.getSafetyFactor(nodeId);
 		const weightedBlocking = this.getWeightedBlockingCount(nodeId);
 		const riskMitigationValue = this.computeRiskMitigationValue(nodeId);
+		const statusQuoAlleviationValue =
+			this.computeStatusQuoAlleviationValue(nodeId);
 
 		// Normalize leverage to 0-1 range using log scale
 		// Most leverage values are 0-10, so log(1 + leverage) / log(11) normalizes to ~0-1
@@ -1026,20 +1202,34 @@ export class RoadmapGraph {
 			Math.log(1 + weightedBlocking) / Math.log(51),
 		);
 
+		// Urgency factor based on parent problem's statusQuoRisk
+		let urgencyFactor = 0;
+		if (node.parentId) {
+			const parentNode = this.nodes.get(node.parentId);
+			if (parentNode?.type === "problem") {
+				urgencyFactor = this.getAdjustedStatusQuoRisk(node.parentId);
+			}
+		}
+
 		// Weighted sum (all factors 0-1, weights sum to 1.0)
 		const baseScore =
 			w.readiness * readiness +
 			w.influence * influence +
 			w.leverage * leverage +
 			w.safetyFactor * safetyFactor +
-			w.blockingScore * blockingScore;
+			w.blockingScore * blockingScore +
+			w.urgencyFactor * urgencyFactor;
 
-		// Risk mitigation bonus (additive, normalized by effort)
+		// Bonuses (additive, normalized by effort)
 		const effort = this.getEffectiveEffort(nodeId);
 		const mitigationBonus =
 			effort > 0 ? (riskMitigationValue / effort) * w.riskMitigationBonus : 0;
+		const alleviationBonus =
+			effort > 0
+				? (statusQuoAlleviationValue / effort) * w.statusQuoAlleviationBonus
+				: 0;
 
-		return baseScore + mitigationBonus;
+		return baseScore + mitigationBonus + alleviationBonus;
 	}
 
 	// ============================================

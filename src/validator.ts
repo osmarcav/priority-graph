@@ -24,6 +24,11 @@ export const BaseNodeSchema = z.object({
 	parentId: z.string().optional(),
 });
 
+const ProblemNodeSchema = BaseNodeSchema.extend({
+	type: z.literal("problem"),
+	statusQuoRisk: z.number().min(0).max(1).optional().default(0),
+});
+
 const SolutionNodeSchema = BaseNodeSchema.extend({
 	type: z.literal("solution"),
 	baseEffort: z.number().int().min(0),
@@ -31,10 +36,10 @@ const SolutionNodeSchema = BaseNodeSchema.extend({
 	baseUncertainty: z.number().min(0).max(1),
 });
 
-const NodeSchema = z.discriminatedUnion("type", [
+export const NodeSchema = z.discriminatedUnion("type", [
 	BaseNodeSchema.extend({ type: z.literal("pillar") }),
 	BaseNodeSchema.extend({ type: z.literal("initiative") }),
-	BaseNodeSchema.extend({ type: z.literal("problem") }),
+	ProblemNodeSchema,
 	SolutionNodeSchema,
 ]);
 
@@ -48,6 +53,14 @@ const BaseEdge = z.object({
 
 const DependsOnEdge = BaseEdge.extend({
 	type: z.literal("DEPENDS_ON"),
+});
+
+const NeedsCoordinationEdge = BaseEdge.extend({
+	type: z.literal("NEEDS_COORDINATION"),
+});
+
+const RelatesToEdge = BaseEdge.extend({
+	type: z.literal("RELATES_TO"),
 });
 
 const FacilitatesEdge = BaseEdge.extend({
@@ -65,21 +78,19 @@ const InformsEdge = BaseEdge.extend({
 	factor: z.number().min(0).max(1),
 });
 
-const NeedsCoordinationEdge = BaseEdge.extend({
-	type: z.literal("NEEDS_COORDINATION"),
+const AlleviatesEdge = BaseEdge.extend({
+	type: z.literal("ALLEVIATES"),
+	factor: z.number().min(0).max(1),
 });
 
-const RelatesToEdge = BaseEdge.extend({
-	type: z.literal("RELATES_TO"),
-});
-
-const EdgeSchema = z.discriminatedUnion("type", [
+export const EdgeSchema = z.discriminatedUnion("type", [
 	DependsOnEdge,
 	FacilitatesEdge,
 	DerisksEdge,
 	InformsEdge,
 	NeedsCoordinationEdge,
 	RelatesToEdge,
+	AlleviatesEdge,
 ]);
 
 const Meta = z.object({

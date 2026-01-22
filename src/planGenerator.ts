@@ -7,7 +7,7 @@ export function generatePlan(graph: RoadmapGraph): string {
 	lines.push("## Plan of Attack");
 	lines.push("");
 	lines.push(
-		"This plan prioritizes work based on impact, risk reduction, and dependency unblocking.",
+		"This plan prioritizes work based on impact, risk reduction, urgency (status quo risk), and dependency unblocking.",
 	);
 	lines.push("");
 
@@ -40,7 +40,33 @@ export function generatePlan(graph: RoadmapGraph): string {
 	});
 	lines.push("");
 
-	// 2. Quick Wins
+	// 2. Urgent Problems (High Status Quo Risk)
+	const urgentProblems = graph
+		.getAllNodes()
+		.filter((n) => n.type === "problem" && !graph.isCompleted(n.id))
+		.map((n) => ({
+			node: n,
+			statusQuoRisk: graph.getAdjustedStatusQuoRisk(n.id),
+		}))
+		.filter((p) => p.statusQuoRisk >= 0.6)
+		.sort((a, b) => b.statusQuoRisk - a.statusQuoRisk)
+		.slice(0, 5);
+
+	if (urgentProblems.length > 0) {
+		lines.push("### 🔥 Urgent Problems");
+		lines.push(
+			"Problems with high status quo risk that require immediate attention.",
+		);
+		lines.push("");
+		urgentProblems.forEach((p) => {
+			lines.push(
+				`- **${p.node.title}** (Urgency: ${(p.statusQuoRisk * 100).toFixed(0)}%)`,
+			);
+		});
+		lines.push("");
+	}
+
+	// 3. Quick Wins
 	const quickWins = actionableParams
 		.filter((m) => m.directEffort <= 3 && m.priorityScore > 0.4)
 		.slice(0, 5);

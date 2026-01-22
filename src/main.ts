@@ -928,8 +928,8 @@ function main() {
 
 		case "report": {
 			const outputPath = args[1]?.endsWith(".json")
-				? args[2] || path.join(__dirname, "..", "output", "report.md")
-				: args[1] || path.join(__dirname, "..", "output", "report.md");
+				? args[2] || path.join(__dirname, "..", "data", "reports", "report.md")
+				: args[1] || path.join(__dirname, "..", "data", "reports", "report.md");
 
 			console.log(`Generating report to: ${outputPath}`);
 

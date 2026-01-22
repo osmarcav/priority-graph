@@ -1,13 +1,9 @@
 import type { z } from "zod";
-import type {
-	EdgeTypeSchema,
-	NodeTypeSchema,
-	RoadmapGraphSchema,
-} from "./validator";
+import type { EdgeSchema, NodeSchema, RoadmapGraphSchema } from "./validator";
 
-export type NodeType = z.infer<typeof NodeTypeSchema>;
+export type NodeType = z.infer<typeof NodeSchema>["type"];
 
-export type EdgeType = z.infer<typeof EdgeTypeSchema>;
+export type EdgeType = z.infer<typeof EdgeSchema>["type"];
 
 // Inferred types from validator schemas (for external data)
 export type RoadmapGraph = z.infer<typeof RoadmapGraphSchema>;
@@ -28,6 +24,9 @@ export interface GraphNode {
 	baseEffort?: number; // Base effort in story points
 	baseRisk?: number; // Base risk: 0.0 (safe) to 1.0 (dangerous)
 	baseUncertainty?: number; // Base uncertainty: 0.0 (known) to 1.0 (high unknowns)
+
+	// Problem node metrics (only for type="problem")
+	statusQuoRisk?: number; // Risk of maintaining current state: 0.0 (stable) to 1.0 (urgent)
 }
 
 export interface GraphEdge {

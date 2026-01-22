@@ -121,6 +121,7 @@ export class ReportGenerator {
 			"| `FACILITATES`       | A → B     | Completing A reduces B's effort (by factor 0.0-1.0)             | Increases A's impact score      | `FACILITATED_BY`      |",
 			"| `DERISKS`           | A → B     | Completing A reduces B's risk (by factor 0.0-1.0)               | Lowers overall project risk     | `DERISKED_BY`         |",
 			"| `INFORMS`           | A → B     | Completing A reduces B's uncertainty (by factor 0.0-1.0)        | Enables better planning         | `INFORMED_BY`         |",
+			"| `ALLEVIATES`        | A → B     | Completing A reduces B's status quo risk (by factor 0.0-1.0)    | Increases urgency-based priority| `ALLEVIATED_BY`       |",
 			"| `RELATES_TO`        | A ↔ B     | A and B share context or concerns                               | Useful for grouping             | `RELATES_TO`          |",
 			"| `NEEDS_COORDINATION`| A ↔ B     | A can proceed in parallel but risk diverging without sync       | Flags coordination need         | `NEEDS_COORDINATION`  |",
 			"",
@@ -132,6 +133,7 @@ export class ReportGenerator {
 			"- `FACILITATED_BY`: Appears when viewing the **target** of a `FACILITATES` edge. Indicates this item's effort is reduced by completing the referenced item.",
 			"- `DERISKED_BY`: Appears when viewing the **target** of a `DERISKS` edge. Indicates this item's risk is reduced by completing the referenced item.",
 			"- `INFORMED_BY`: Appears when viewing the **target** of an `INFORMS` edge. Indicates this item's uncertainty is reduced by completing the referenced item.",
+			"- `ALLEVIATED_BY`: Appears when viewing the **target** of an `ALLEVIATES` edge. Indicates this problem's urgency is reduced by completing the referenced solution.",
 			"",
 			"These inverse tags are not in the source data—they're computed when generating the report to improve readability from each node's perspective.",
 			"",
@@ -338,30 +340,27 @@ export class ReportGenerator {
 						// If A facilitates B, then B is facilitated by A
 						displayType = "FACILITATED_BY";
 						break;
+					case "DERISKS":
+						// If A derisks B, then B is derisked by A
+						displayType = "DERISKED_BY";
+						break;
+					case "INFORMS":
+						// If A informs B, then B is informed by A
+						displayType = "INFORMED_BY";
+						break;
+					case "ALLEVIATES":
+						// If A alleviates B, then B is alleviated by A
+						displayType = "ALLEVIATED_BY";
+						break;
 					// Bidirectional edges stay the same
 					case "RELATES_TO":
 					case "NEEDS_COORDINATION":
 						displayType = edge.type;
 						break;
-					// DERISKS: when target, we derisk the source's risk
-					case "DERISKS":
-						// No change - target derisks source's risk
-						displayType = "DERISKS";
-						break;
 				}
 			} else {
-				// Current node is SOURCE of the edge
-				switch (edge.type) {
-					case "DERISKS":
-						// If A->B with DERISKS, B derisks A's risk
-						// So from A's perspective: risk is derisked by B
-						displayType = "RISK_DERISKED_BY";
-						break;
-					default:
-						// Keep original type
-						displayType = edge.type;
-						break;
-				}
+				// Current node is SOURCE of the edge - keep original type
+				displayType = edge.type;
 			}
 
 			// Format the edge
